@@ -1,1 +1,0 @@
-{"version":3,"file":"stream-queue.module.js","sourceRoot":"","sources":["../../src/stream-queue/stream-queue.module.ts"],"names":[],"mappings":";;;;;;;;;AAAA,2CAAwC;AAOjC,IAAM,iBAAiB,GAAvB,MAAM,iBAAiB;CAAG,CAAA;AAApB,8CAAiB;4BAAjB,iBAAiB;IAL7B,IAAA,eAAM,EAAC;QACN,SAAS,EAAE,EAAE;QACb,WAAW,EAAE,EAAE;QACf,OAAO,EAAE,EAAE;KACZ,CAAC;GACW,iBAAiB,CAAG"}

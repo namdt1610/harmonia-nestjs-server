@@ -3,13 +3,11 @@ import {
   NotFoundException,
   BadRequestException,
 } from '@nestjs/common';
-import { InjectModel } from '@nestjs/mongoose';
-import { Model, Types } from 'mongoose';
 
-import { Track, TrackDocument } from '../schemas/track.schema';
-import { Artist, ArtistDocument } from '../schemas/artist.schema';
-import { Album, AlbumDocument } from '../schemas/album.schema';
-import { Genre, GenreDocument } from '../schemas/genre.schema';
+import { TrackRepository } from './track.repository';
+import { ArtistRepository } from '../artists/artist.repository';
+import { AlbumRepository } from '../albums/album.repository';
+import { GenreRepository } from '../genres/genre.repository';
 
 export interface CreateTrackDto {
   title: string;
@@ -51,29 +49,41 @@ export interface TrackQueryParams {
 @Injectable()
 export class TracksService {
   constructor(
-    @InjectModel(Track.name) private trackModel: Model<TrackDocument>,
-    @InjectModel(Artist.name) private artistModel: Model<ArtistDocument>,
-    @InjectModel(Album.name) private albumModel: Model<AlbumDocument>,
-    @InjectModel(Genre.name) private genreModel: Model<GenreDocument>,
+    private readonly trackRepository: TrackRepository,
+    private readonly artistRepository: ArtistRepository,
+    private readonly albumRepository: AlbumRepository,
+    private readonly genreRepository: GenreRepository,
   ) {}
 
-  async create(createTrackDto: CreateTrackDto): Promise<Track> {
+  async create(createTrackDto: CreateTrackDto): Promise<any> {
     // Validate artist exists
-    const artist = await this.artistModel.findById(createTrackDto.artistId);
+    const artist = await this.artistRepository.findById(
+      createTrackDto.artistId,
+    );
     if (!artist) {
       throw new NotFoundException('Artist not found');
     }
 
     // Validate album exists if provided
     if (createTrackDto.albumId) {
-      const album = await this.albumModel.findById(createTrackDto.albumId);
+      const album = await this.albumRepository.findById(createTrackDto.albumId);
       if (!album) {
         throw new NotFoundException('Album not found');
       }
     }
 
-    // Create track
-    const track = new this.trackModel({
+    // Validate genres if provided
+    if (createTrackDto.genreIds && createTrackDto.genreIds.length > 0) {
+      for (const genreId of createTrackDto.genreIds) {
+        const genre = await this.genreRepository.findById(genreId);
+        if (!genre) {
+          throw new NotFoundException(`Genre with ID ${genreId} not found`);
+        }
+      }
+    }
+
+    // Create track using repository - map fields to match repository interface
+    return this.trackRepository.create({
       title: createTrackDto.title,
       artist: createTrackDto.artistId,
       album: createTrackDto.albumId,
@@ -86,27 +96,11 @@ export class TracksService {
       genres: createTrackDto.genreIds || [],
       isDownloadable: createTrackDto.isDownloadable ?? true,
     });
-
-    const savedTrack = await track.save();
-
-    // Update artist's tracks
-    await this.artistModel.findByIdAndUpdate(createTrackDto.artistId, {
-      $push: { tracks: savedTrack._id },
-    });
-
-    // Update album's tracks if album is provided
-    if (createTrackDto.albumId) {
-      await this.albumModel.findByIdAndUpdate(createTrackDto.albumId, {
-        $push: { tracks: savedTrack._id },
-      });
-    }
-
-    return savedTrack.populate(['artist', 'album', 'genres']);
   }
 
   async findAll(
     queryParams: TrackQueryParams = {},
-  ): Promise<{ tracks: Track[]; total: number }> {
+  ): Promise<{ tracks: any[]; total: number }> {
     const {
       search,
       artistId,
@@ -118,182 +112,115 @@ export class TracksService {
       sortOrder = 'desc',
     } = queryParams;
 
-    // Build query
-    const query: any = {};
+    // Convert offset to page number for repository
+    const page = Math.floor(offset / limit) + 1;
 
-    if (search) {
-      query.$or = [
-        { title: { $regex: search, $options: 'i' } },
-        { lyrics: { $regex: search, $options: 'i' } },
-      ];
-    }
+    const result = await this.trackRepository.findAll(
+      page,
+      limit,
+      search,
+      artistId,
+      albumId,
+      genreId,
+    );
 
-    if (artistId) {
-      query.artist = artistId;
-    }
-
-    if (albumId) {
-      query.album = albumId;
-    }
-
-    if (genreId) {
-      query.genres = genreId;
-    }
-
-    // Build sort
-    const sort: any = {};
-    sort[sortBy] = sortOrder === 'asc' ? 1 : -1;
-
-    // Execute query
-    const [tracks, total] = await Promise.all([
-      this.trackModel
-        .find(query)
-        .populate('artist', 'name image')
-        .populate('album', 'title image')
-        .populate('genres', 'name')
-        .sort(sort)
-        .skip(offset)
-        .limit(limit)
-        .exec(),
-      this.trackModel.countDocuments(query),
-    ]);
-
-    return { tracks, total };
+    return {
+      tracks: result.tracks,
+      total: result.total,
+    };
   }
 
-  async findById(id: string): Promise<Track> {
-    if (!Types.ObjectId.isValid(id)) {
-      throw new BadRequestException('Invalid track ID');
-    }
-
-    const track = await this.trackModel
-      .findById(id)
-      .populate('artist', 'name image bio')
-      .populate('album', 'title image releaseDate')
-      .populate('genres', 'name description')
-      .exec();
-
+  async findById(id: string): Promise<any> {
+    const track = await this.trackRepository.findById(id);
     if (!track) {
       throw new NotFoundException('Track not found');
     }
-
     return track;
   }
 
-  async update(id: string, updateTrackDto: UpdateTrackDto): Promise<Track> {
-    const track = await this.trackModel
-      .findByIdAndUpdate(id, updateTrackDto, { new: true })
-      .populate(['artist', 'album', 'genres'])
-      .exec();
+  async update(id: string, updateTrackDto: UpdateTrackDto): Promise<any> {
+    // Validate genres if provided
+    if (updateTrackDto.genreIds && updateTrackDto.genreIds.length > 0) {
+      for (const genreId of updateTrackDto.genreIds) {
+        const genre = await this.genreRepository.findById(genreId);
+        if (!genre) {
+          throw new NotFoundException(`Genre with ID ${genreId} not found`);
+        }
+      }
+    }
 
+    const track = await this.trackRepository.update(id, updateTrackDto);
     if (!track) {
       throw new NotFoundException('Track not found');
     }
-
     return track;
   }
 
   async remove(id: string): Promise<void> {
-    const track = await this.trackModel.findById(id);
-    if (!track) {
+    const deleted = await this.trackRepository.delete(id);
+    if (!deleted) {
       throw new NotFoundException('Track not found');
     }
-
-    // Remove from artist's tracks
-    await this.artistModel.findByIdAndUpdate(track.artist, {
-      $pull: { tracks: id },
-    });
-
-    // Remove from album's tracks if album exists
-    if (track.album) {
-      await this.albumModel.findByIdAndUpdate(track.album, {
-        $pull: { tracks: id },
-      });
-    }
-
-    await this.trackModel.findByIdAndDelete(id);
   }
 
-  async incrementPlayCount(id: string): Promise<Track> {
-    const track = await this.trackModel
-      .findByIdAndUpdate(id, { $inc: { playCount: 1 } }, { new: true })
-      .populate(['artist', 'album', 'genres'])
-      .exec();
-
+  async incrementPlayCount(id: string): Promise<any> {
+    const track = await this.trackRepository.incrementPlayCount(id);
     if (!track) {
       throw new NotFoundException('Track not found');
     }
-
     return track;
   }
 
-  async incrementDownloadCount(id: string): Promise<Track> {
-    const track = await this.trackModel
-      .findByIdAndUpdate(id, { $inc: { downloadCount: 1 } }, { new: true })
-      .populate(['artist', 'album', 'genres'])
-      .exec();
-
+  async incrementDownloadCount(id: string): Promise<any> {
+    const track = await this.trackRepository.incrementDownloadCount(id);
     if (!track) {
       throw new NotFoundException('Track not found');
     }
-
     return track;
   }
 
-  async getPopularTracks(limit: number = 10): Promise<Track[]> {
-    return this.trackModel
-      .find()
-      .populate('artist', 'name image')
-      .populate('album', 'title image')
-      .sort({ playCount: -1 })
-      .limit(limit)
-      .exec();
+  async getPopularTracks(limit: number = 10): Promise<any[]> {
+    return this.trackRepository.findPopular(limit);
   }
 
-  async getRecentTracks(limit: number = 10): Promise<Track[]> {
-    return this.trackModel
-      .find()
-      .populate('artist', 'name image')
-      .populate('album', 'title image')
-      .sort({ createdAt: -1 })
-      .limit(limit)
-      .exec();
+  async getRecentTracks(limit: number = 10): Promise<any[]> {
+    return this.trackRepository.findRecent(limit);
   }
 
   async getTracksByArtist(
     artistId: string,
     limit: number = 20,
-  ): Promise<Track[]> {
-    return this.trackModel
-      .find({ artist: artistId })
-      .populate('album', 'title image')
-      .populate('genres', 'name')
-      .sort({ createdAt: -1 })
-      .limit(limit)
-      .exec();
+  ): Promise<any[]> {
+    // Validate artist exists
+    const artist = await this.artistRepository.findById(artistId);
+    if (!artist) {
+      throw new NotFoundException('Artist not found');
+    }
+
+    const tracks = await this.trackRepository.findByArtist(artistId);
+    // Apply limit manually since repository method doesn't support it
+    return tracks.slice(0, limit);
   }
 
-  async getTracksByAlbum(albumId: string): Promise<Track[]> {
-    return this.trackModel
-      .find({ album: albumId })
-      .populate('artist', 'name image')
-      .populate('genres', 'name')
-      .sort({ createdAt: 1 })
-      .exec();
+  async getTracksByAlbum(albumId: string): Promise<any[]> {
+    // Validate album exists
+    const album = await this.albumRepository.findById(albumId);
+    if (!album) {
+      throw new NotFoundException('Album not found');
+    }
+
+    return this.trackRepository.findByAlbum(albumId);
   }
 
-  async searchTracks(query: string, limit: number = 20): Promise<Track[]> {
-    return this.trackModel
-      .find({
-        $or: [
-          { title: { $regex: query, $options: 'i' } },
-          { lyrics: { $regex: query, $options: 'i' } },
-        ],
-      })
-      .populate('artist', 'name image')
-      .populate('album', 'title image')
-      .populate('genres', 'name')
-      .limit(limit)
-      .exec();
+  async searchTracks(query: string, limit: number = 20): Promise<any[]> {
+    const result = await this.trackRepository.findAll(
+      1,
+      limit,
+      query,
+      undefined,
+      undefined,
+      undefined,
+    );
+    return result.tracks;
   }
 }

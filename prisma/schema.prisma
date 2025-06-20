@@ -1,0 +1,328 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// User model
+model User {
+  id          String   @id @default(cuid())
+  email       String   @unique
+  username    String   @unique
+  password    String?
+  firstName   String?
+  lastName    String?
+  isActive    Boolean  @default(true)
+  isStaff     Boolean  @default(false)
+  isSuperuser Boolean  @default(false)
+  dateJoined  DateTime @default(now())
+  lastLogin   DateTime?
+  bio         String?
+  image       String?
+  googleSub   String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  // Relations
+  playlists         Playlist[]
+  favoriteTracks    UserFavoriteTrack[]
+  favoriteArtists   UserFavoriteArtist[]
+  favoriteAlbums    UserFavoriteAlbum[]
+  subscription      UserSubscription?
+  activities        UserActivity[]
+  recentlyPlayed    UserRecentTrack[]
+  streamQueues      StreamQueue[]
+  favorites         Favorite[]
+
+  @@map("users")
+}
+
+// Artist model
+model Artist {
+  id          String   @id @default(cuid())
+  name        String
+  bio         String?
+  image       String?
+  website     String?
+  verified    Boolean  @default(false)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  // Relations
+  tracks      Track[]
+  albums      Album[]
+  followers   UserFavoriteArtist[]
+
+  @@map("artists")
+}
+
+// Album model
+model Album {
+  id          String   @id @default(cuid())
+  title       String
+  description String?
+  image       String?
+  releaseDate DateTime?
+  isPublished Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  // Relations
+  artist      Artist   @relation(fields: [artistId], references: [id], onDelete: Cascade)
+  artistId    String
+  tracks      Track[]
+  favorites   UserFavoriteAlbum[]
+
+  @@map("albums")
+}
+
+// Genre model
+model Genre {
+  id          String   @id @default(cuid())
+  name        String   @unique
+  description String?
+  image       String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  // Relations
+  tracks      TrackGenre[]
+
+  @@map("genres")
+}
+
+// Track model
+model Track {
+  id              String   @id @default(cuid())
+  title           String
+  file            String?
+  video           String?
+  image           String?
+  videoThumbnail  String?
+  duration        Int?     // Duration in seconds
+  lyrics          String?
+  playCount       Int      @default(0)
+  downloadCount   Int      @default(0)
+  isDownloadable  Boolean  @default(true)
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  // Relations
+  artist          Artist   @relation(fields: [artistId], references: [id], onDelete: Cascade)
+  artistId        String
+  album           Album?   @relation(fields: [albumId], references: [id], onDelete: SetNull)
+  albumId         String?
+  genres          TrackGenre[]
+  playlists       PlaylistTrack[]
+  favorites       UserFavoriteTrack[]
+  recentlyPlayed  UserRecentTrack[]
+  streamQueues    StreamQueueTrack[]
+
+  @@map("tracks")
+}
+
+// Playlist model
+model Playlist {
+  id          String   @id @default(cuid())
+  name        String
+  description String?
+  image       String?
+  isPublic    Boolean  @default(false)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  // Relations
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  userId      String
+  tracks      PlaylistTrack[]
+
+  @@map("playlists")
+}
+
+// Junction tables for many-to-many relationships
+model TrackGenre {
+  track     Track  @relation(fields: [trackId], references: [id], onDelete: Cascade)
+  trackId   String
+  genre     Genre  @relation(fields: [genreId], references: [id], onDelete: Cascade)
+  genreId   String
+
+  @@id([trackId, genreId])
+  @@map("track_genres")
+}
+
+model PlaylistTrack {
+  playlist    Playlist @relation(fields: [playlistId], references: [id], onDelete: Cascade)
+  playlistId  String
+  track       Track    @relation(fields: [trackId], references: [id], onDelete: Cascade)
+  trackId     String
+  position    Int      @default(0)
+  addedAt     DateTime @default(now())
+
+  @@id([playlistId, trackId])
+  @@map("playlist_tracks")
+}
+
+model UserFavoriteTrack {
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  userId    String
+  track     Track    @relation(fields: [trackId], references: [id], onDelete: Cascade)
+  trackId   String
+  createdAt DateTime @default(now())
+
+  @@id([userId, trackId])
+  @@map("user_favorite_tracks")
+}
+
+model UserFavoriteArtist {
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  userId    String
+  artist    Artist   @relation(fields: [artistId], references: [id], onDelete: Cascade)
+  artistId  String
+  createdAt DateTime @default(now())
+
+  @@id([userId, artistId])
+  @@map("user_favorite_artists")
+}
+
+model UserFavoriteAlbum {
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  userId    String
+  album     Album    @relation(fields: [albumId], references: [id], onDelete: Cascade)
+  albumId   String
+  createdAt DateTime @default(now())
+
+  @@id([userId, albumId])
+  @@map("user_favorite_albums")
+}
+
+model UserRecentTrack {
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  userId    String
+  track     Track    @relation(fields: [trackId], references: [id], onDelete: Cascade)
+  trackId   String
+  playedAt  DateTime @default(now())
+
+  @@id([userId, trackId])
+  @@map("user_recent_tracks")
+}
+
+// Subscription Plans
+model SubscriptionPlan {
+  id          String   @id @default(cuid())
+  name        String   @unique
+  description String?
+  price       Decimal  @db.Decimal(10, 2)
+  currency    String   @default("USD")
+  interval    String   // monthly, yearly
+  features    Json?    // JSON array of features
+  isActive    Boolean  @default(true)
+  stripeId    String?  @unique
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  // Relations
+  subscriptions UserSubscription[]
+
+  @@map("subscription_plans")
+}
+
+// User Subscriptions
+model UserSubscription {
+  id               String           @id @default(cuid())
+  status           String           // active, canceled, expired
+  currentPeriodStart DateTime
+  currentPeriodEnd   DateTime
+  canceledAt       DateTime?
+  stripeId         String?          @unique
+  createdAt        DateTime         @default(now())
+  updatedAt        DateTime         @updatedAt
+
+  // Relations
+  user             User             @relation(fields: [userId], references: [id], onDelete: Cascade)
+  userId           String           @unique
+  plan             SubscriptionPlan @relation(fields: [planId], references: [id])
+  planId           String
+
+  @@map("user_subscriptions")
+}
+
+// User Activities
+model UserActivity {
+  id          String   @id @default(cuid())
+  action      String   // play, download, like, etc.
+  metadata    Json?    // Additional data
+  ipAddress   String?
+  userAgent   String?
+  createdAt   DateTime @default(now())
+
+  // Relations
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  userId      String
+
+  @@map("user_activities")
+}
+
+// Stream Queue
+model StreamQueue {
+  id           String   @id @default(cuid())
+  currentIndex Int      @default(0)
+  shuffle      Boolean  @default(false)
+  repeat       String   @default("off") // off, track, playlist
+  lastPlayed   DateTime @default(now())
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  // Relations
+  user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  userId       String   @unique
+  tracks       StreamQueueTrack[]
+
+  @@map("stream_queues")
+}
+
+model StreamQueueTrack {
+  queue       StreamQueue @relation(fields: [queueId], references: [id], onDelete: Cascade)
+  queueId     String
+  track       Track       @relation(fields: [trackId], references: [id], onDelete: Cascade)
+  trackId     String
+  position    Int
+  addedAt     DateTime    @default(now())
+
+  @@id([queueId, trackId])
+  @@map("stream_queue_tracks")
+}
+
+// Favorites (generic favorites table)
+model Favorite {
+  id          String   @id @default(cuid())
+  contentType String   // track, artist, album, playlist
+  contentId   String
+  createdAt   DateTime @default(now())
+
+  // Relations
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  userId      String
+
+  @@unique([userId, contentType, contentId])
+  @@map("favorites")
+}
+
+// Indexes for better performance
+model SearchIndex {
+  id        String @id @default(cuid())
+  content   String
+  type      String // track, artist, album
+  contentId String
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([content])
+  @@index([type])
+  @@map("search_indexes")
+} 

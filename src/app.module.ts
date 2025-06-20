@@ -1,9 +1,9 @@
 import { Module } from '@nestjs/common';
-import { MongooseModule } from '@nestjs/mongoose';
 import { ConfigModule, ConfigService } from '@nestjs/config';
 import { ThrottlerModule } from '@nestjs/throttler';
 import { ServeStaticModule } from '@nestjs/serve-static';
 import { join } from 'path';
+import { ScheduleModule } from '@nestjs/schedule';
 
 import { AppController } from './app.controller';
 import { AppService } from './app.service';
@@ -20,6 +20,14 @@ import { SearchModule } from './search/search.module';
 import { AnalyticsModule } from './analytics/analytics.module';
 import { ChatbotModule } from './chatbot/chatbot.module';
 import { StreamQueueModule } from './stream-queue/stream-queue.module';
+import { PaymentsModule } from './payments/payments.module';
+import { NotificationsModule } from './notifications/notifications.module';
+
+// Database service
+import { PrismaModule } from './common/prisma.module';
+
+// WebSocket Gateway
+import { WebSocketGateway } from './common/websocket.gateway';
 
 @Module({
   imports: [
@@ -27,24 +35,14 @@ import { StreamQueueModule } from './stream-queue/stream-queue.module';
       isGlobal: true,
       envFilePath: '.env',
     }),
-    MongooseModule.forRootAsync({
-      imports: [ConfigModule],
-      useFactory: (configService: ConfigService) => ({
-        uri: configService.get(
-          'MONGODB_URI',
-          'mongodb://localhost:27017/harmonia',
-        ),
-        useNewUrlParser: true,
-        useUnifiedTopology: true,
-      }),
-      inject: [ConfigService],
-    }),
+    PrismaModule,
     ThrottlerModule.forRoot([
       {
         ttl: 60000,
         limit: 100,
       },
     ]),
+    ScheduleModule.forRoot(),
     ServeStaticModule.forRoot({
       rootPath: join(__dirname, '..', 'uploads'),
       serveRoot: '/media',
@@ -62,8 +60,11 @@ import { StreamQueueModule } from './stream-queue/stream-queue.module';
     AnalyticsModule,
     ChatbotModule,
     StreamQueueModule,
+    PaymentsModule,
+    NotificationsModule,
   ],
   controllers: [AppController],
-  providers: [AppService],
+  providers: [AppService, WebSocketGateway],
+  exports: [WebSocketGateway],
 })
 export class AppModule {}

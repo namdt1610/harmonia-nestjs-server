@@ -5,24 +5,12 @@ import {
   BadRequestException,
 } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
-import { InjectModel } from '@nestjs/mongoose';
-import { Model } from 'mongoose';
+import { ConfigService } from '@nestjs/config';
 import * as bcrypt from 'bcryptjs';
-
-import { User, UserDocument } from '../schemas/user.schema';
-
-export interface CreateUserDto {
-  email: string;
-  username: string;
-  password: string;
-  firstName?: string;
-  lastName?: string;
-}
-
-export interface LoginDto {
-  email: string;
-  password: string;
-}
+import { PrismaService } from '../common/prisma.service';
+import { User } from '@prisma/client';
+import { CreateUserDto } from '../users/dto/create-user.dto';
+import { LoginDto } from './dto/login.dto';
 
 export interface GoogleUserDto {
   email: string;
@@ -34,9 +22,9 @@ export interface GoogleUserDto {
 @Injectable()
 export class AuthService {
   constructor(
-    @InjectModel(User.name)
-    private userModel: Model<UserDocument>,
-    private jwtService: JwtService,
+    private readonly prisma: PrismaService,
+    private readonly jwtService: JwtService,
+    private readonly configService: ConfigService,
   ) {}
 
   async register(
@@ -45,54 +33,55 @@ export class AuthService {
     const { email, username, password, firstName, lastName } = createUserDto;
 
     // Check if user already exists
-    const existingUser = await this.userModel.findOne({
-      $or: [{ email }, { username }],
+    const existingUser = await this.prisma.user.findFirst({
+      where: {
+        OR: [{ email: email }, { username: username }],
+      },
     });
 
     if (existingUser) {
-      if (existingUser.email === email) {
-        throw new ConflictException('Email already exists');
-      }
-      if (existingUser.username === username) {
-        throw new ConflictException('Username already exists');
-      }
+      throw new UnauthorizedException(
+        'User with this email or username already exists',
+      );
     }
 
     // Hash password
-    const saltRounds = 12;
-    const hashedPassword = await bcrypt.hash(password, saltRounds);
+    const hashedPassword = await bcrypt.hash(password, 10);
 
     // Create user
-    const user = new this.userModel({
-      email,
-      username,
-      password: hashedPassword,
-      firstName,
-      lastName,
+    const user = await this.prisma.user.create({
+      data: {
+        ...createUserDto,
+        password: hashedPassword,
+      },
     });
 
-    const savedUser = await user.save();
-
     // Generate JWT token
-    const accessToken = this.generateJwtToken(savedUser);
+    const payload = {
+      sub: user.id,
+      email: user.email,
+      username: user.username,
+    };
 
-    // Convert to object and remove password
-    const userObject = savedUser.toObject();
-    delete userObject.password;
-
-    return { user: userObject, accessToken };
+    return {
+      access_token: this.jwtService.sign(payload),
+      user: {
+        id: user.id,
+        email: user.email,
+        username: user.username,
+        firstName: user.firstName,
+        lastName: user.lastName,
+        image: user.image,
+        isStaff: user.isStaff,
+        isSuperuser: user.isSuperuser,
+      },
+    };
   }
 
   async login(
     loginDto: LoginDto,
   ): Promise<{ user: User; accessToken: string }> {
-    const { email, password } = loginDto;
-
-    // Find user by email
-    const user = await this.userModel
-      .findOne({ email })
-      .select('+password')
-      .exec();
+    const user = await this.validateUser(loginDto.email, loginDto.password);
 
     if (!user) {
       throw new UnauthorizedException('Invalid credentials');
@@ -102,113 +91,161 @@ export class AuthService {
       throw new UnauthorizedException('Account is deactivated');
     }
 
-    // Verify password
-    const isPasswordValid = await bcrypt.compare(password, user.password);
-    if (!isPasswordValid) {
-      throw new UnauthorizedException('Invalid credentials');
-    }
-
     // Update last login
-    await this.userModel.findByIdAndUpdate(user._id, { lastLogin: new Date() });
+    await this.prisma.user.update({
+      where: { id: user.id },
+      data: { lastLogin: new Date() },
+    });
 
-    // Generate JWT token
-    const accessToken = this.generateJwtToken(user);
-
-    // Convert to object and remove password
-    const userObject = user.toObject();
-    delete userObject.password;
-
-    return { user: userObject, accessToken };
-  }
-
-  async validateUser(email: string, password: string): Promise<User | null> {
-    const user = await this.userModel
-      .findOne({ email })
-      .select('+password')
-      .exec();
-
-    if (user && user.isActive) {
-      const isPasswordValid = await bcrypt.compare(password, user.password);
-      if (isPasswordValid) {
-        const userObject = user.toObject();
-        delete userObject.password;
-        return userObject;
-      }
-    }
-    return null;
-  }
-
-  async findById(id: string): Promise<User | null> {
-    return this.userModel
-      .findById(id)
-      .populate('subscription')
-      .populate({
-        path: 'subscription',
-        populate: {
-          path: 'plan',
-        },
-      })
-      .exec();
-  }
-
-  private generateJwtToken(user: User): string {
     const payload = {
-      sub: user._id || user.id,
+      sub: user.id,
       email: user.email,
       username: user.username,
     };
 
-    return this.jwtService.sign(payload);
+    return {
+      access_token: this.jwtService.sign(payload),
+      user: {
+        id: user.id,
+        email: user.email,
+        username: user.username,
+        firstName: user.firstName,
+        lastName: user.lastName,
+        image: user.image,
+        isStaff: user.isStaff,
+        isSuperuser: user.isSuperuser,
+      },
+    };
+  }
+
+  async validateUser(email: string, password: string): Promise<User | null> {
+    const user = await this.prisma.user.findUnique({
+      where: { email },
+    });
+
+    if (
+      user &&
+      user.password &&
+      (await bcrypt.compare(password, user.password))
+    ) {
+      const { password: _, ...result } = user;
+      return result as User;
+    }
+
+    return null;
+  }
+
+  async findUserById(id: string): Promise<User | null> {
+    return this.prisma.user.findUnique({
+      where: { id },
+      select: {
+        id: true,
+        email: true,
+        username: true,
+        firstName: true,
+        lastName: true,
+        isActive: true,
+        isStaff: true,
+        isSuperuser: true,
+        dateJoined: true,
+        lastLogin: true,
+        bio: true,
+        image: true,
+        googleSub: true,
+        createdAt: true,
+        updatedAt: true,
+      },
+    });
   }
 
   async googleLogin(
     googleUser: GoogleUserDto,
   ): Promise<{ user: User; accessToken: string }> {
-    const { email, firstName, lastName, googleId } = googleUser;
-
-    // Check if user exists with this Google ID
-    let user = await this.userModel.findOne({ googleSub: googleId });
+    let user = await this.prisma.user.findFirst({
+      where: { googleSub: googleUser.googleId },
+    });
 
     if (!user) {
-      // Check if user exists with this email
-      user = await this.userModel.findOne({ email });
+      // Check if user exists with same email
+      user = await this.prisma.user.findUnique({
+        where: { email: googleUser.email },
+      });
 
       if (user) {
         // Link Google account to existing user
-        user.googleSub = googleId;
-        await user.save();
+        user = await this.prisma.user.update({
+          where: { id: user.id },
+          data: { googleSub: googleUser.googleId },
+        });
       } else {
         // Create new user
-        const username =
-          email.split('@')[0] + '_' + Math.random().toString(36).substr(2, 9);
-        user = new this.userModel({
-          email,
-          username,
-          firstName,
-          lastName,
-          googleSub: googleId,
+        user = await this.prisma.user.create({
+          data: {
+            email: googleUser.email,
+            username: googleUser.email.split('@')[0],
+            firstName: googleUser.firstName,
+            lastName: googleUser.lastName,
+            image: googleUser.picture,
+            googleSub: googleUser.googleId,
+            isActive: true,
+          },
         });
-        await user.save();
       }
     }
 
     // Update last login
-    user.lastLogin = new Date();
-    await user.save();
+    await this.prisma.user.update({
+      where: { id: user.id },
+      data: { lastLogin: new Date() },
+    });
 
-    // Generate JWT token
-    const accessToken = this.generateJwtToken(user);
+    const payload = {
+      sub: user.id,
+      email: user.email,
+      username: user.username,
+    };
 
-    // Convert to object and remove password
-    const userObject = user.toObject();
-    delete userObject.password;
-
-    return { user: userObject, accessToken };
+    return {
+      access_token: this.jwtService.sign(payload),
+      user: {
+        id: user.id,
+        email: user.email,
+        username: user.username,
+        firstName: user.firstName,
+        lastName: user.lastName,
+        image: user.image,
+        isStaff: user.isStaff,
+        isSuperuser: user.isSuperuser,
+      },
+    };
   }
 
-  async refreshToken(user: User): Promise<{ accessToken: string }> {
-    const accessToken = this.generateJwtToken(user);
-    return { accessToken };
+  async refreshToken(userId: string) {
+    const user = await this.findUserById(userId);
+
+    if (!user || !user.isActive) {
+      throw new UnauthorizedException('User not found or inactive');
+    }
+
+    const payload = {
+      sub: user.id,
+      email: user.email,
+      username: user.username,
+    };
+
+    return {
+      access_token: this.jwtService.sign(payload),
+      user: {
+        id: user.id,
+        email: user.email,
+        username: user.username,
+        firstName: user.firstName,
+        lastName: user.lastName,
+        image: user.image,
+        isStaff: user.isStaff,
+        isSuperuser: user.isSuperuser,
+      },
+    };
   }
 
   async changePassword(
@@ -216,16 +253,14 @@ export class AuthService {
     currentPassword: string,
     newPassword: string,
   ): Promise<void> {
-    const user = await this.userModel
-      .findById(userId)
-      .select('+password')
-      .exec();
+    const user = await this.prisma.user.findUnique({
+      where: { id: userId },
+    });
 
-    if (!user) {
+    if (!user || !user.password) {
       throw new UnauthorizedException('User not found');
     }
 
-    // Verify current password
     const isCurrentPasswordValid = await bcrypt.compare(
       currentPassword,
       user.password,
@@ -234,18 +269,20 @@ export class AuthService {
       throw new UnauthorizedException('Current password is incorrect');
     }
 
-    // Hash new password
-    const saltRounds = 12;
-    const hashedNewPassword = await bcrypt.hash(newPassword, saltRounds);
+    const hashedNewPassword = await bcrypt.hash(newPassword, 10);
 
-    // Update password
-    await this.userModel.findByIdAndUpdate(userId, {
-      password: hashedNewPassword,
+    await this.prisma.user.update({
+      where: { id: userId },
+      data: { password: hashedNewPassword },
     });
+
+    return { message: 'Password changed successfully' };
   }
 
   async forgotPassword(email: string): Promise<void> {
-    const user = await this.userModel.findOne({ email });
+    const user = await this.prisma.user.findUnique({
+      where: { email },
+    });
 
     if (!user) {
       // Don't reveal whether user exists or not
@@ -254,7 +291,7 @@ export class AuthService {
 
     // Generate reset token (in production, send this via email)
     const resetToken = this.jwtService.sign(
-      { sub: user._id, type: 'password-reset' },
+      { sub: user.id, type: 'password-reset' },
       { expiresIn: '1h' },
     );
 
@@ -272,12 +309,12 @@ export class AuthService {
       }
 
       // Hash new password
-      const saltRounds = 12;
-      const hashedPassword = await bcrypt.hash(newPassword, saltRounds);
+      const hashedPassword = await bcrypt.hash(newPassword, 10);
 
       // Update password
-      await this.userModel.findByIdAndUpdate(payload.sub, {
-        password: hashedPassword,
+      await this.prisma.user.update({
+        where: { id: payload.sub },
+        data: { password: hashedPassword },
       });
     } catch (error) {
       throw new BadRequestException('Invalid or expired token');

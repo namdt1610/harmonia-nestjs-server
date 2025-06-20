@@ -1,8 +1,12 @@
 import { Module } from '@nestjs/common';
+import { ChatbotController } from './chatbot.controller';
+import { ChatbotService } from './chatbot.service';
+import { PrismaModule } from '../common/prisma.module';
 
 @Module({
-  providers: [],
-  controllers: [],
-  exports: [],
+  imports: [PrismaModule],
+  controllers: [ChatbotController],
+  providers: [ChatbotService],
+  exports: [ChatbotService],
 })
 export class ChatbotModule {}
