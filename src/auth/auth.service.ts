@@ -5,11 +5,11 @@ import {
   BadRequestException,
 } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
-import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
+import { InjectModel } from '@nestjs/mongoose';
+import { Model } from 'mongoose';
 import * as bcrypt from 'bcryptjs';
 
-import { User } from '../entities/user.entity';
+import { User, UserDocument } from '../schemas/user.schema';
 
 export interface CreateUserDto {
   email: string;
@@ -34,8 +34,8 @@ export interface GoogleUserDto {
 @Injectable()
 export class AuthService {
   constructor(
-    @InjectRepository(User)
-    private userRepository: Repository<User>,
+    @InjectModel(User.name)
+    private userModel: Model<UserDocument>,
     private jwtService: JwtService,
   ) {}
 
@@ -45,8 +45,8 @@ export class AuthService {
     const { email, username, password, firstName, lastName } = createUserDto;
 
     // Check if user already exists
-    const existingUser = await this.userRepository.findOne({
-      where: [{ email }, { username }],
+    const existingUser = await this.userModel.findOne({
+      $or: [{ email }, { username }],
     });
 
     if (existingUser) {
@@ -63,7 +63,7 @@ export class AuthService {
     const hashedPassword = await bcrypt.hash(password, saltRounds);
 
     // Create user
-    const user = this.userRepository.create({
+    const user = new this.userModel({
       email,
       username,
       password: hashedPassword,
@@ -71,15 +71,16 @@ export class AuthService {
       lastName,
     });
 
-    await this.userRepository.save(user);
+    const savedUser = await user.save();
 
     // Generate JWT token
-    const accessToken = this.generateJwtToken(user);
+    const accessToken = this.generateJwtToken(savedUser);
 
-    // Remove password from response
-    delete user.password;
+    // Convert to object and remove password
+    const userObject = savedUser.toObject();
+    delete userObject.password;
 
-    return { user, accessToken };
+    return { user: userObject, accessToken };
   }
 
   async login(
@@ -88,18 +89,10 @@ export class AuthService {
     const { email, password } = loginDto;
 
     // Find user by email
-    const user = await this.userRepository.findOne({
-      where: { email },
-      select: [
-        'id',
-        'email',
-        'username',
-        'password',
-        'firstName',
-        'lastName',
-        'isActive',
-      ],
-    });
+    const user = await this.userModel
+      .findOne({ email })
+      .select('+password')
+      .exec();
 
     if (!user) {
       throw new UnauthorizedException('Invalid credentials');
@@ -116,51 +109,51 @@ export class AuthService {
     }
 
     // Update last login
-    await this.userRepository.update(user.id, { lastLogin: new Date() });
+    await this.userModel.findByIdAndUpdate(user._id, { lastLogin: new Date() });
 
     // Generate JWT token
     const accessToken = this.generateJwtToken(user);
 
-    // Remove password from response
-    delete user.password;
+    // Convert to object and remove password
+    const userObject = user.toObject();
+    delete userObject.password;
 
-    return { user, accessToken };
+    return { user: userObject, accessToken };
   }
 
   async validateUser(email: string, password: string): Promise<User | null> {
-    const user = await this.userRepository.findOne({
-      where: { email },
-      select: [
-        'id',
-        'email',
-        'username',
-        'password',
-        'firstName',
-        'lastName',
-        'isActive',
-      ],
-    });
+    const user = await this.userModel
+      .findOne({ email })
+      .select('+password')
+      .exec();
 
     if (user && user.isActive) {
       const isPasswordValid = await bcrypt.compare(password, user.password);
       if (isPasswordValid) {
-        delete user.password;
-        return user;
+        const userObject = user.toObject();
+        delete userObject.password;
+        return userObject;
       }
     }
     return null;
   }
 
   async findById(id: string): Promise<User | null> {
-    return this.userRepository.findOne({
-      where: { id },
-      relations: ['subscription', 'subscription.plan'],
-    });
+    return this.userModel
+      .findById(id)
+      .populate('subscription')
+      .populate({
+        path: 'subscription',
+        populate: {
+          path: 'plan',
+        },
+      })
+      .exec();
   }
 
   private generateJwtToken(user: User): string {
     const payload = {
-      sub: user.id,
+      sub: user._id || user.id,
       email: user.email,
       username: user.username,
     };
@@ -174,47 +167,120 @@ export class AuthService {
     const { email, firstName, lastName, googleId } = googleUser;
 
     // Check if user exists with this Google ID
-    let user = await this.userRepository.findOne({
-      where: { googleSub: googleId },
-    });
+    let user = await this.userModel.findOne({ googleSub: googleId });
 
     if (!user) {
       // Check if user exists with this email
-      user = await this.userRepository.findOne({
-        where: { email },
-      });
+      user = await this.userModel.findOne({ email });
 
       if (user) {
         // Link Google account to existing user
         user.googleSub = googleId;
-        await this.userRepository.save(user);
+        await user.save();
       } else {
         // Create new user
         const username =
           email.split('@')[0] + '_' + Math.random().toString(36).substr(2, 9);
-        user = this.userRepository.create({
+        user = new this.userModel({
           email,
           username,
           firstName,
           lastName,
           googleSub: googleId,
-          password: '', // No password for Google users
         });
-        await this.userRepository.save(user);
+        await user.save();
       }
     }
 
     // Update last login
-    await this.userRepository.update(user.id, { lastLogin: new Date() });
+    user.lastLogin = new Date();
+    await user.save();
 
     // Generate JWT token
     const accessToken = this.generateJwtToken(user);
 
-    return { user, accessToken };
+    // Convert to object and remove password
+    const userObject = user.toObject();
+    delete userObject.password;
+
+    return { user: userObject, accessToken };
   }
 
   async refreshToken(user: User): Promise<{ accessToken: string }> {
     const accessToken = this.generateJwtToken(user);
     return { accessToken };
+  }
+
+  async changePassword(
+    userId: string,
+    currentPassword: string,
+    newPassword: string,
+  ): Promise<void> {
+    const user = await this.userModel
+      .findById(userId)
+      .select('+password')
+      .exec();
+
+    if (!user) {
+      throw new UnauthorizedException('User not found');
+    }
+
+    // Verify current password
+    const isCurrentPasswordValid = await bcrypt.compare(
+      currentPassword,
+      user.password,
+    );
+    if (!isCurrentPasswordValid) {
+      throw new UnauthorizedException('Current password is incorrect');
+    }
+
+    // Hash new password
+    const saltRounds = 12;
+    const hashedNewPassword = await bcrypt.hash(newPassword, saltRounds);
+
+    // Update password
+    await this.userModel.findByIdAndUpdate(userId, {
+      password: hashedNewPassword,
+    });
+  }
+
+  async forgotPassword(email: string): Promise<void> {
+    const user = await this.userModel.findOne({ email });
+
+    if (!user) {
+      // Don't reveal whether user exists or not
+      return;
+    }
+
+    // Generate reset token (in production, send this via email)
+    const resetToken = this.jwtService.sign(
+      { sub: user._id, type: 'password-reset' },
+      { expiresIn: '1h' },
+    );
+
+    // Store reset token (you might want to store this in a separate collection)
+    // For now, we'll just log it (in production, send via email)
+    console.log(`Password reset token for ${email}: ${resetToken}`);
+  }
+
+  async resetPassword(token: string, newPassword: string): Promise<void> {
+    try {
+      const payload = this.jwtService.verify(token);
+
+      if (payload.type !== 'password-reset') {
+        throw new BadRequestException('Invalid token type');
+      }
+
+      // Hash new password
+      const saltRounds = 12;
+      const hashedPassword = await bcrypt.hash(newPassword, saltRounds);
+
+      // Update password
+      await this.userModel.findByIdAndUpdate(payload.sub, {
+        password: hashedPassword,
+      });
+    } catch (error) {
+      throw new BadRequestException('Invalid or expired token');
+    }
   }
 }
