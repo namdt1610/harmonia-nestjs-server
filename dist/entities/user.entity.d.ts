@@ -1,0 +1,32 @@
+import { Playlist } from './playlist.entity';
+import { Track } from './track.entity';
+import { Artist } from './artist.entity';
+import { Album } from './album.entity';
+import { UserSubscription } from './user-subscription.entity';
+import { UserActivity } from './user-activity.entity';
+export declare class User {
+    id: string;
+    email: string;
+    username: string;
+    password: string;
+    firstName?: string;
+    lastName?: string;
+    isActive: boolean;
+    isStaff: boolean;
+    isSuperuser: boolean;
+    dateJoined: Date;
+    lastLogin?: Date;
+    bio?: string;
+    image?: string;
+    googleSub?: string;
+    createdAt: Date;
+    updatedAt: Date;
+    playlists: Playlist[];
+    favoriteTracks: Track[];
+    favoriteArtists: Artist[];
+    favoriteAlbums: Album[];
+    subscription?: UserSubscription;
+    activities: UserActivity[];
+    recentlyPlayed: Track[];
+    get fullName(): string;
+}
